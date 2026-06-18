@@ -1,0 +1,116 @@
+# The compliance ext_proc service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promptcloak-extproc
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/name: promptcloak-extproc
+data:
+  LISTEN_ADDR: ":9002"
+  HEALTH_ADDR: ":8080"
+  LOG_LEVEL: "info"
+  # Fail-open forwards traffic if a body cannot be inspected. Set to "false"
+  # in regulated environments to reject un-inspectable requests instead.
+  FAIL_OPEN: "true"
+  PRESIDIO_URL: "http://presidio-analyzer.promptcloak-system.svc:3000"
+  PRESIDIO_LANGUAGE: "en"
+  PRESIDIO_SCORE_THRESHOLD: "0.5"
+  # Comma-separated Presidio entity types; empty means "all".
+  PRESIDIO_ENTITIES: ""
+  REDIS_ADDR: "redis.promptcloak-system.svc:6379"
+  REDIS_DB: "0"
+  TOKEN_TTL: "24h"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: promptcloak-extproc
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/name: promptcloak-extproc
+type: Opaque
+stringData:
+  # CHANGE ME: a per-environment secret mixed into token ids. Rotating this
+  # invalidates the determinism of previously-issued token ids.
+  TOKEN_SALT: "change-me-to-a-random-secret"
+  # Set if Redis AUTH is enabled.
+  REDIS_PASSWORD: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: promptcloak-extproc
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/name: promptcloak-extproc
+    app.kubernetes.io/part-of: promptcloak
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: promptcloak-extproc
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: promptcloak-extproc
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        # distroless:nonroot runs as a non-numeric user ("nonroot"); pin the
+        # numeric UID/GID (65532) so the kubelet can verify it is non-root.
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: extproc
+          image: ghcr.io/coreoptimizer/promptcloak/extproc:0.1.0
+          envFrom:
+            - configMapRef:
+                name: promptcloak-extproc
+            - secretRef:
+                name: promptcloak-extproc
+          ports:
+            - name: grpc
+              containerPort: 9002
+            - name: health
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: promptcloak-extproc
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/name: promptcloak-extproc
+spec:
+  selector:
+    app.kubernetes.io/name: promptcloak-extproc
+  ports:
+    - name: grpc
+      port: 9002
+      targetPort: grpc
+      # Tell Envoy Gateway to speak HTTP/2 cleartext (h2c) to this gRPC backend.
+      appProtocol: kubernetes.io/h2c

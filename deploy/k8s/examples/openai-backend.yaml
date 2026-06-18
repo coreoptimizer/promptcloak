@@ -1,0 +1,58 @@
+# Reference: front the real OpenAI API instead of the mock upstream.
+#
+# Requires the Envoy Gateway Backend feature to be enabled in the EnvoyGateway
+# config (backend.enabled: true). The client supplies its own Authorization:
+# Bearer <key> header; this gateway only inspects/rewrites the body.
+#
+# To use:
+#   1. kubectl apply -f examples/openai-backend.yaml
+#   2. Replace the backendRef in 50-httproute.yaml with the route below (or
+#      delete 50-httproute.yaml and rely on this one).
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: Backend
+metadata:
+  name: openai
+  namespace: promptcloak-system
+spec:
+  endpoints:
+    - fqdn:
+        hostname: api.openai.com
+        port: 443
+---
+apiVersion: gateway.networking.k8s.io/v1alpha3
+kind: BackendTLSPolicy
+metadata:
+  name: openai-tls
+  namespace: promptcloak-system
+spec:
+  targetRefs:
+    - group: gateway.envoyproxy.io
+      kind: Backend
+      name: openai
+  validation:
+    wellKnownCACertificates: System
+    hostname: api.openai.com
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openai
+  namespace: promptcloak-system
+spec:
+  parentRefs:
+    - name: promptcloak-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            hostname: api.openai.com
+      backendRefs:
+        - group: gateway.envoyproxy.io
+          kind: Backend
+          name: openai
+          port: 443

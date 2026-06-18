@@ -1,0 +1,28 @@
+# Gateway API plumbing, served by Envoy Gateway.
+#
+# Prerequisite: Envoy Gateway must be installed in the cluster, e.g.
+#   helm install eg oci://docker.io/envoyproxy/gateway-helm \
+#     --version v1.3.0 -n envoy-gateway-system --create-namespace
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: promptcloak
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: promptcloak-gateway
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/part-of: promptcloak
+spec:
+  gatewayClassName: promptcloak
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same

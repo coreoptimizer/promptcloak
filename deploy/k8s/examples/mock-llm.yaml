@@ -1,0 +1,58 @@
+# A mock "LLM" upstream for end-to-end testing without external credentials.
+#
+# mendhak/http-https-echo reflects the incoming request (including the body) back
+# as JSON. That lets you verify the round trip:
+#   - the body the upstream RECEIVES contains tokens (PII never reaches it) —
+#     visible in the echo server's logs / the reflected "body" field;
+#   - the response you GET BACK has those tokens re-hydrated to real values by
+#     the ext_proc response filter.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/name: mock-llm
+    app.kubernetes.io/part-of: promptcloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mock-llm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mock-llm
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: echo
+          image: mendhak/http-https-echo:31
+          env:
+            - name: HTTP_PORT
+              value: "8080"
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-llm
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/name: mock-llm
+spec:
+  selector:
+    app.kubernetes.io/name: mock-llm
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

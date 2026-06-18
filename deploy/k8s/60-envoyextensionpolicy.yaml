@@ -1,0 +1,35 @@
+# Attaches the compliance ext_proc service to the LLM HTTPRoute.
+#
+# processingMode:
+#   request.body: Buffered  -> the whole request body is delivered in one
+#                              message so it can be parsed, scanned and
+#                              tokenized before reaching the model. Envoy
+#                              recomputes Content-Length after mutation.
+#   response.body: Streamed -> response chunks are delivered as they arrive so
+#                              tokens can be re-hydrated without blocking the
+#                              stream (SSE-friendly).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: promptcloak-extproc
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/part-of: promptcloak
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: llm
+  extProc:
+    - backendRefs:
+        - name: promptcloak-extproc
+          port: 9002
+      # Per-message timeout for the ext_proc service to reply. The default is
+      # 200ms, far too short for an HTTP round-trip to Presidio plus NER
+      # inference (especially the first, cold request). Raise it generously.
+      messageTimeout: 30s
+      processingMode:
+        request:
+          body: Buffered
+        response:
+          body: Streamed

@@ -1,0 +1,75 @@
+# Microsoft Presidio analyzer (PII detection engine).
+#
+# The image bundles a spaCy NER model and loads it at startup, which can take a
+# while and needs ~1Gi of memory — hence the generous startup probe. Detection
+# results (entity spans) are returned to the ext_proc service, which performs
+# tokenization itself; the Presidio anonymizer service is not required.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: presidio-analyzer
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/name: presidio-analyzer
+    app.kubernetes.io/part-of: promptcloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: presidio-analyzer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: presidio-analyzer
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: presidio-analyzer
+          image: mcr.microsoft.com/presidio-analyzer:latest
+          ports:
+            - name: http
+              containerPort: 3000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60 # allow up to ~5min for model load
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: presidio-analyzer
+  namespace: promptcloak-system
+  labels:
+    app.kubernetes.io/name: presidio-analyzer
+spec:
+  selector:
+    app.kubernetes.io/name: presidio-analyzer
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

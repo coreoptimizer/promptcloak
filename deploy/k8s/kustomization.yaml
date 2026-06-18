@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Namespaces are set explicitly on each resource (GatewayClass is cluster-scoped,
+# so a blanket namespace transformer would wrongly namespace it).
+resources:
+  - 00-namespace.yaml
+  - 10-redis.yaml
+  - 20-presidio.yaml
+  - 30-extproc.yaml
+  - 40-gateway.yaml
+  - 50-httproute.yaml
+  - 60-envoyextensionpolicy.yaml
+  # The LLM backend. Swap mock-llm for examples/openai-backend.yaml to front a
+  # real provider (and update 50-httproute.yaml accordingly).
+  - examples/mock-llm.yaml
