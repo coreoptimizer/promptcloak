@@ -1,5 +1,7 @@
 # Architecture
 
+![promptcloak architecture diagram](arch.png)
+
 ## Why ext_proc behind Gateway API
 
 The [Kubernetes Gateway API](https://gateway-api.sigs.k8s.io/) is the official

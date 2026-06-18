@@ -8,21 +8,26 @@ then **re-hydrates** the real values on the way back to the user.
 
 The model never sees the raw sensitive data; the user never sees a redaction.
 
-```
- user / agent
-     │  POST /v1/chat/completions  {"messages":[{"role":"user","content":"I'm Jane Doe, jane@acme.com"}]}
-     ▼
-┌─────────────────┐   ext_proc gRPC    ┌────────────────────────┐     ┌──────────────────┐
-│  Envoy Gateway  │ ─────────────────► │  promptcloak-extproc    │ ──► │ Presidio analyzer│
-│  (Gateway API)  │ ◄───────────────── │  (this project, Go)    │ ◄── │  (PII detection) │
-└────────┬────────┘                    └───────────┬────────────┘     └──────────────────┘
-         │                                          │  token ⇄ value
-         │  sanitized body                          ▼
-         │  {"...content":"I'm [[CMPL_PERSON_…]], [[CMPL_EMAIL_ADDRESS_…]]"}   ┌────────┐
-         ▼                                                                     │ Redis  │
-   LLM provider  ──── response (may echo tokens) ────► re-hydrate ──► user     │ vault  │
-                                                                               └────────┘
-```
+![promptcloak architecture diagram](arch.png)
+
+## Architecture
+
+promptcloak composes three pieces. **Envoy Gateway** — the
+[Gateway API](https://gateway-api.sigs.k8s.io/) data plane — streams every chat
+transaction over gRPC to the **promptcloak `ext_proc` service** (this project,
+written in Go). That service delegates the actual PII detection to
+**[Microsoft Presidio](https://github.com/microsoft/presidio)**, an open-source
+data de-identification toolkit: user-authored prompt text is sent to Presidio's
+analyzer, which returns the spans (PERSON, EMAIL_ADDRESS, etc.) it recognized.
+promptcloak replaces each span with a reversible token and persists the
+`token → value` mapping in **Redis**, then restores the real values on the
+response.
+
+promptcloak performs no detection logic of its own — it orchestrates
+tokenization, persistence, and re-hydration around Presidio's analyzer, so
+detection quality and entity coverage are governed entirely by
+[Presidio's configuration and recognizers](https://microsoft.github.io/presidio/analyzer/)
+(see the detection-tuning note under [Quickstart](#quickstart-local-cluster)).
 
 ## How it works
 
@@ -41,6 +46,45 @@ This is the MVP scope: **inbound prompt tokenization + response re-hydration**.
 Outbound PII *detection*, MCP tool-call inspection, and RAG/context inspection
 are tracked in [ROADMAP.md](./ROADMAP.md). Design details are in
 [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+## Examples
+
+Take a single chat request that contains a name and an email.
+
+**1. What the user/agent sends** — `POST /v1/chat/completions`:
+
+```json
+{"model":"gpt-4","messages":[{"role":"user","content":"I am Jane Doe, email jane@acme.com"}]}
+```
+
+**2. What the model actually receives** — promptcloak detects the PII via
+Presidio and forwards a sanitized body; the real values never leave the cluster:
+
+```json
+{"model":"gpt-4","messages":[{"role":"user","content":"I am [[CMPL_PERSON_3f2a9c1b7e4d8a06]], email [[CMPL_EMAIL_ADDRESS_a1b2c3d4e5f60718]]"}]}
+```
+
+**3. What's stored in the vault** (Redis) — the reversible `token → value`
+mappings, scoped to `TOKEN_TTL`:
+
+```
+[[CMPL_PERSON_3f2a9c1b7e4d8a06]]         → Jane Doe
+[[CMPL_EMAIL_ADDRESS_a1b2c3d4e5f60718]]  → jane@acme.com
+```
+
+**4. What the user gets back** — if the model echoes any of those tokens,
+promptcloak re-hydrates them on the response stream:
+
+```
+model output:  "Hi [[CMPL_PERSON_3f2a9c1b7e4d8a06]], I've noted [[CMPL_EMAIL_ADDRESS_a1b2c3d4e5f60718]]."
+user sees:     "Hi Jane Doe, I've noted jane@acme.com."
+```
+
+Tokens are deterministic — the same value yields the same token within and
+across requests — so the model retains coreference (it can tell two mentions
+refer to the same person) without ever seeing the underlying data. See the
+[Quickstart](#quickstart-local-cluster) to run this end-to-end against a mock
+upstream.
 
 ## Repository layout
 
