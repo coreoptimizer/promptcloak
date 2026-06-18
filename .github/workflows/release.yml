@@ -94,3 +94,7 @@ jobs:
         with:
           generate_release_notes: true
           files: dist/*.tgz
+          # A SemVer pre-release tag (contains a hyphen, e.g. v0.1.0-rc.1) is
+          # published as a GitHub pre-release and does not become "latest".
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
