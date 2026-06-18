@@ -39,8 +39,9 @@ type Config struct {
 	Redis  RedisConfig
 }
 
-// RedisConfig configures the Redis-backed token vault. An empty Addr selects
-// the in-memory vault (single-replica / non-durable; intended for local dev).
+// RedisConfig configures the Redis-protocol token vault (the bundled backend is
+// Valkey). An empty Addr selects the in-memory vault (single-replica /
+// non-durable; intended for local dev).
 type RedisConfig struct {
 	Addr     string
 	Password string
@@ -74,9 +75,12 @@ func Load() (*Config, error) {
 			},
 		},
 		Redis: RedisConfig{
-			Addr:     getenv("REDIS_ADDR", ""),
-			Password: getenv("REDIS_PASSWORD", ""),
-			DB:       getenvInt("REDIS_DB", 0),
+			// The vault speaks the Redis wire protocol; the bundled backend is
+			// Valkey (a drop-in). VALKEY_* names are preferred, with the legacy
+			// REDIS_* names accepted as a fallback.
+			Addr:     getenvFallback("VALKEY_ADDR", "REDIS_ADDR", ""),
+			Password: getenvFallback("VALKEY_PASSWORD", "REDIS_PASSWORD", ""),
+			DB:       getenvIntFallback("VALKEY_DB", "REDIS_DB", 0),
 		},
 	}
 
@@ -118,9 +122,9 @@ func getenvBool(key string, def bool) bool {
 	return b
 }
 
-func getenvInt(key string, def int) int {
-	v, ok := os.LookupEnv(key)
-	if !ok || v == "" {
+func getenvIntFallback(primary, fallback string, def int) int {
+	v, ok := firstEnv(primary, fallback)
+	if !ok {
 		return def
 	}
 	n, err := strconv.Atoi(v)

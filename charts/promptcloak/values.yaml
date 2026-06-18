@@ -1,0 +1,107 @@
+# Default values for the promptcloak chart.
+# `helm install promptcloak oci://ghcr.io/coreoptimizer/promptcloak/charts/promptcloak \
+#    --namespace promptcloak-system --create-namespace`
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/coreoptimizer/promptcloak/extproc
+  # tag defaults to the chart's appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Number of ext_proc replicas. Safe to scale when using a shared vault (Valkey).
+replicaCount: 2
+
+extproc:
+  logLevel: info
+  # Forward (true) vs. reject with 503 (false) when a body can't be inspected.
+  failOpen: true
+  tokenTTL: 24h
+  # CHANGE ME. Secret mixed into token ids; a weak/shared salt allows
+  # correlation of identical PII across requests.
+  tokenSalt: change-me-to-a-random-secret
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# Detection backend: "presidio" | "regex" | "gcpdlp".
+detector: presidio
+
+# Shared detection knobs (apply to whichever backend is selected).
+detect:
+  language: en
+  scoreThreshold: "0.5"
+  # Comma-separated canonical entity allowlist (e.g. "PERSON,EMAIL_ADDRESS").
+  # Empty means "all entities the backend supports".
+  entities: ""
+  timeout: 5s
+
+# --- presidio backend ---
+presidio:
+  # Deploy the bundled Microsoft Presidio analyzer.
+  enabled: true
+  image: mcr.microsoft.com/presidio-analyzer:latest
+  # URL the ext_proc service uses to reach the analyzer. Leave empty to use the
+  # bundled service; set it to point at an external analyzer.
+  url: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+
+# --- gcpdlp backend (set detector=gcpdlp) ---
+gcpDlp:
+  project: ""
+  location: global
+  minLikelihood: POSSIBLE
+  # Static OAuth2 access token. Empty -> use the GKE/GCE metadata server
+  # (workload identity).
+  token: ""
+  endpoint: https://dlp.googleapis.com
+
+# Token vault. The bundled backend is Valkey (BSD-licensed Redis fork); the
+# ext_proc service speaks the Redis wire protocol.
+valkey:
+  enabled: true
+  image: valkey/valkey:8.1-alpine
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 320Mi
+
+# External vault settings, used when valkey.enabled=false.
+# An empty addr selects the in-memory vault (single-replica, dev-only).
+vault:
+  addr: ""
+  password: ""
+  db: 0
+
+# Gateway API plumbing. Requires Envoy Gateway installed in the cluster.
+gateway:
+  enabled: true
+  # GatewayClass is cluster-scoped; set createClass=false to reuse an existing one.
+  createClass: true
+  className: promptcloak
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  port: 80
+  # Per-message ext_proc timeout. Presidio's first (cold) request can be slow.
+  messageTimeout: 30s
+
+# Mock echo upstream for end-to-end testing without external credentials.
+mockLlm:
+  enabled: true
+  image: mendhak/http-https-echo:31
+
+# When mockLlm.enabled=false, the HTTPRoute targets this backend instead.
+backend:
+  name: ""
+  port: 80

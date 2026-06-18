@@ -28,7 +28,7 @@ Envoy                         promptcloak-extproc
   │  RequestHeaders ─────────────►│  CONTINUE
   │  RequestBody (Buffered) ─────►│  parse chat JSON
   │                               │   └─ Presidio /analyze → spans
-  │                               │   └─ tokenize spans, Redis SET token→value
+  │                               │   └─ tokenize spans, Valkey SET token→value
   │  ◄──────── BodyMutation ──────│  sanitized body (Content-Length recomputed)
   │  … forwards to LLM provider …
   │  ResponseHeaders ────────────►│  CONTINUE
@@ -111,8 +111,9 @@ non-overlapping set), replaces each with a token, and persists `token→value`.
   value. Reversal is by vault lookup, not by inverting the hash.
 
 ### `internal/vault`: token store
-`Put`/`Get` with TTL. **Redis** (shared, durable, multi-replica; production) or
-**in-memory** (dev/test). Because each ext_proc replica may handle either
+`Put`/`Get` with TTL. **Valkey** (shared, durable, multi-replica; production;
+Redis wire protocol) or **in-memory** (dev/test). Because each ext_proc replica
+may handle either
 direction of different transactions behind a load balancer, a shared vault makes
 re-hydration robust to scaling.
 
@@ -143,7 +144,7 @@ at every possible split point.
 ## Scaling & ordering notes
 
 - The service is stateless except for the per-stream re-hydration carry buffer;
-  scale `replicas` freely with Redis as the shared vault.
+  scale `replicas` freely with Valkey as the shared vault.
 - gRPC to the ext_proc backend is HTTP/2; the Service advertises
   `appProtocol: kubernetes.io/h2c` so Envoy Gateway uses h2c upstream.
 - Determinism means repeated values in one prompt collapse to one token, fewer

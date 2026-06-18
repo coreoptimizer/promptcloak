@@ -1,0 +1,60 @@
+{{- if .Values.mockLlm.enabled }}
+# Mock "LLM" upstream for end-to-end testing without external credentials.
+# mendhak/http-https-echo reflects the request body back as JSON, so you can see
+# that the body it RECEIVES contains tokens (PII never reaches it) while the
+# response you GET BACK has those tokens re-hydrated.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "promptcloak.mockLlmName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "promptcloak.mockLlmName" . }}
+    {{- include "promptcloak.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "promptcloak.mockLlmName" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "promptcloak.mockLlmName" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: echo
+          image: {{ .Values.mockLlm.image | quote }}
+          env:
+            - name: HTTP_PORT
+              value: "8080"
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "promptcloak.mockLlmName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "promptcloak.mockLlmName" . }}
+    {{- include "promptcloak.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "promptcloak.mockLlmName" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- end }}

@@ -1,0 +1,21 @@
+apiVersion: v2
+name: promptcloak
+description: Compliance gateway that reversibly tokenizes PII in LLM/chat traffic (Envoy ext_proc behind Gateway API).
+type: application
+# version is the chart version; appVersion is the promptcloak image version.
+# Both are overwritten from the git tag by the release workflow.
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/coreoptimizer/promptcloak
+sources:
+  - https://github.com/coreoptimizer/promptcloak
+keywords:
+  - pii
+  - compliance
+  - gateway-api
+  - envoy
+  - ext_proc
+  - llm
+maintainers:
+  - name: coreoptimizer
+    url: https://github.com/coreoptimizer
