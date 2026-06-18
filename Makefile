@@ -3,8 +3,10 @@ SHELL := /bin/bash
 BIN := bin
 IMG ?= ghcr.io/coreoptimizer/promptcloak/extproc:0.1.0
 NAMESPACE ?= promptcloak-system
+CHART := charts/promptcloak
 
-.PHONY: all build test vet tidy run docker-build docker-push deploy undeploy clean
+.PHONY: all build test vet tidy run docker-build docker-push deploy undeploy \
+	helm-lint helm-template helm-package helm-install clean
 
 all: build
 
@@ -26,7 +28,7 @@ vet:
 tidy:
 	go mod tidy
 
-## run locally (expects PRESIDIO_URL reachable; uses in-memory vault if REDIS_ADDR unset)
+## run locally (expects PRESIDIO_URL reachable; uses in-memory vault if VALKEY_ADDR unset)
 run: build
 	./$(BIN)/extproc
 
@@ -46,5 +48,23 @@ deploy:
 undeploy:
 	kubectl delete -k deploy/k8s --ignore-not-found
 
+## lint the Helm chart
+helm-lint:
+	helm lint $(CHART)
+
+## render the Helm chart to stdout
+helm-template:
+	helm template promptcloak $(CHART) -n $(NAMESPACE)
+
+## package the Helm chart into ./dist
+helm-package:
+	@mkdir -p dist
+	helm package $(CHART) -d dist
+
+## install the chart from local sources (requires Envoy Gateway in the cluster)
+helm-install:
+	helm upgrade --install promptcloak $(CHART) \
+		--namespace $(NAMESPACE) --create-namespace
+
 clean:
-	rm -rf $(BIN)
+	rm -rf $(BIN) dist

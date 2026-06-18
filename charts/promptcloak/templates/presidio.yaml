@@ -1,0 +1,73 @@
+{{- if .Values.presidio.enabled }}
+# Microsoft Presidio analyzer (PII detection engine). Loads a spaCy NER model at
+# startup (~1Gi, can take minutes) — hence the generous startup probe.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "promptcloak.presidioName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "promptcloak.presidioName" . }}
+    {{- include "promptcloak.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "promptcloak.presidioName" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "promptcloak.presidioName" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: presidio-analyzer
+          image: {{ .Values.presidio.image | quote }}
+          ports:
+            - name: http
+              containerPort: 3000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60 # allow up to ~5min for model load
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.presidio.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "promptcloak.presidioName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "promptcloak.presidioName" . }}
+    {{- include "promptcloak.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "promptcloak.presidioName" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+{{- end }}

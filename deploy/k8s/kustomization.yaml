@@ -4,7 +4,7 @@ kind: Kustomization
 # so a blanket namespace transformer would wrongly namespace it).
 resources:
   - 00-namespace.yaml
-  - 10-redis.yaml
+  - 10-valkey.yaml
   - 20-presidio.yaml
   - 30-extproc.yaml
   - 40-gateway.yaml

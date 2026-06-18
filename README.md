@@ -17,7 +17,7 @@ promptcloak composes three pieces. **Envoy Gateway**, the
 transaction over gRPC to the **promptcloak `ext_proc` service** (this project,
 written in Go). That service delegates PII detection to a **pluggable detection
 backend**, replaces each detected span with a reversible token, persists the
-`token → value` mapping in **Redis**, and restores the real values on the
+`token → value` mapping in **Valkey**, and restores the real values on the
 response. promptcloak performs no detection logic of its own; it orchestrates
 tokenization, persistence, and re-hydration around whichever detector is
 configured. Detection happens behind a single Go interface (`detect.Analyzer`),
@@ -44,7 +44,7 @@ Select one with the `DETECTOR` environment variable (default `presidio`):
    parses the chat JSON (OpenAI / Anthropic shapes), sends user-authored text to
    the configured **detection backend** for PII detection, replaces each detected
    span with a deterministic **token** (`[[CMPL_<ENTITY>_<id>]]`), stores
-   `token → value` in **Redis**, and forwards the sanitized body to the model.
+   `token → value` in **Valkey**, and forwards the sanitized body to the model.
 3. **Outbound (response).** Response chunks are delivered streamed. The service
    swaps any of *its* tokens back to the real values (a cheap, streaming-aware
    lookup) so the end user sees their real data restored.
@@ -71,7 +71,7 @@ Presidio and forwards a sanitized body; the real values never leave the cluster:
 {"model":"gpt-4","messages":[{"role":"user","content":"I am [[CMPL_PERSON_3f2a9c1b7e4d8a06]], email [[CMPL_EMAIL_ADDRESS_a1b2c3d4e5f60718]]"}]}
 ```
 
-**3. What's stored in the vault** (Redis). The reversible `token → value`
+**3. What's stored in the vault** (Valkey). The reversible `token → value`
 mappings, scoped to `TOKEN_TTL`:
 
 ```
@@ -100,13 +100,57 @@ cmd/extproc            ext_proc gRPC server entrypoint
 internal/config        environment-driven configuration
 internal/detect        pluggable PII detection (presidio / regex / gcpdlp)
 internal/tokenize      reversible token format
-internal/vault         token store (Redis + in-memory)
+internal/vault         token store (Valkey/Redis protocol + in-memory)
 internal/redact        detect + tokenize + persist  (the request-side transform)
 internal/llmbody       chat-body JSON walker (OpenAI / Anthropic shapes)
 internal/rehydrate     streaming-aware token → value restoration (response side)
 internal/extproc       Envoy ExternalProcessor implementation
-deploy/k8s             Gateway API + ext_proc + Redis + Presidio manifests
+deploy/k8s             Gateway API + ext_proc + Valkey + Presidio manifests
 ```
+
+## Install with Helm
+
+The released image and chart are published to **ghcr.io**. You need a cluster
+and **Envoy Gateway** installed (see the [Quickstart](#quickstart-local-cluster)
+below for the one-liner), then:
+
+```sh
+helm install promptcloak \
+  oci://ghcr.io/coreoptimizer/promptcloak/charts/promptcloak \
+  --version 0.1.0 \
+  --namespace promptcloak-system --create-namespace \
+  --set extproc.tokenSalt=$(openssl rand -hex 16)
+```
+
+By default this deploys the full evaluable stack: the ext_proc service, a
+bundled **Valkey** vault, **Presidio**, a mock LLM upstream, and the Gateway API
+plumbing. Test it:
+
+```sh
+kubectl -n promptcloak-system port-forward svc/promptcloak-gateway 8080:80 &
+curl -s localhost:8080/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"gpt-4","messages":[{"role":"user","content":"I am Jane Doe, email jane@acme.com"}]}' | jq
+```
+
+Common overrides (`--set` or a `-f values.yaml`):
+
+| Value | Default | Purpose |
+|---|---|---|
+| `detector` | `presidio` | detection backend: `presidio`, `regex`, `gcpdlp` |
+| `presidio.enabled` | `true` | deploy the bundled Presidio analyzer |
+| `valkey.enabled` | `true` | deploy bundled Valkey; set `false` + `vault.addr` for an external vault |
+| `mockLlm.enabled` | `true` | deploy the echo upstream; set `false` + `backend.name` to front a real LLM |
+| `gateway.enabled` | `true` | create GatewayClass / Gateway / HTTPRoute / ExtensionPolicy |
+| `replicaCount` | `2` | ext_proc replicas |
+| `image.tag` | chart `appVersion` | override the image tag |
+
+For a minimal, no-external-services install (e.g. CI): `--set detector=regex
+--set presidio.enabled=false`. See every value with `helm show values
+oci://ghcr.io/coreoptimizer/promptcloak/charts/promptcloak --version 0.1.0`.
+
+> ghcr.io packages are private until made public (see [RELEASE.md](./RELEASE.md));
+> if private, `helm registry login ghcr.io` first.
 
 ## Quickstart (local cluster)
 
@@ -172,14 +216,15 @@ All via environment (see [`30-extproc.yaml`](./deploy/k8s/30-extproc.yaml)):
 | `GCP_DLP_MIN_LIKELIHOOD` | `POSSIBLE` | DLP likelihood floor (`gcpdlp` only) |
 | `GCP_DLP_TOKEN` | *(unset → metadata server)* | static OAuth2 token; else workload identity (`gcpdlp` only) |
 | `GCP_DLP_ENDPOINT` | `https://dlp.googleapis.com` | DLP API base URL (`gcpdlp` only) |
-| `REDIS_ADDR` | *(unset → in-memory)* | vault backend |
-| `REDIS_PASSWORD` / `REDIS_DB` | `` / `0` | vault auth / db |
+| `VALKEY_ADDR` | *(unset → in-memory)* | vault backend (Redis wire protocol; bundled server is Valkey) |
+| `VALKEY_PASSWORD` / `VALKEY_DB` | `` / `0` | vault auth / db |
 | `TOKEN_TTL` | `24h` | mapping lifetime |
 | `TOKEN_SALT` | `promptcloak` | secret mixed into token ids; **change this** |
 
 The four `DETECT_*` knobs are shared across backends; the legacy
 `PRESIDIO_LANGUAGE` / `PRESIDIO_SCORE_THRESHOLD` / `PRESIDIO_ENTITIES` /
-`PRESIDIO_TIMEOUT` names are still honored as a fallback.
+`PRESIDIO_TIMEOUT` names are still honored as a fallback. Likewise `VALKEY_*`
+falls back to the legacy `REDIS_*` names.
 
 ## Security notes
 
@@ -189,7 +234,7 @@ The four `DETECT_*` knobs are shared across backends; the legacy
 - **`TOKEN_SALT`** is a secret. With a weak/shared salt, identical PII produces
   identical token ids across requests, enabling correlation. Per-session salting
   is on the roadmap.
-- **Vault durability.** Use Redis (default in the manifests) so tokens survive
+- **Vault durability.** Use Valkey (default in the manifests) so tokens survive
   across replicas and restarts. The in-memory vault is dev-only.
 
 ## Development

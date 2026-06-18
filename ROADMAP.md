@@ -67,7 +67,7 @@ cross-request correlation. (Today: static `TOKEN_SALT`.)
 - Prometheus metrics: detections by entity type, tokenize/rehydrate latency,
   Presidio error rate, vault hit/miss, fail-open events.
 - Tracing spans on the ext_proc stream.
-- Richer `/readyz` that checks Presidio + Redis reachability.
+- Richer `/readyz` that checks Presidio + Valkey reachability.
 
 ## 9. Robustness & scale
 
@@ -75,4 +75,4 @@ cross-request correlation. (Today: static `TOKEN_SALT`.)
   detection instead of `Buffered`.
 - Broaden provider body coverage (Gemini, Bedrock, Cohere shapes).
 - Fail-closed as the default once detection availability is proven.
-- Redis HA / persistence guidance; vault encryption at rest.
+- Valkey HA / persistence guidance; vault encryption at rest.

@@ -1,0 +1,35 @@
+promptcloak {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Detection backend: {{ .Values.detector }}
+Token vault:       {{ if .Values.valkey.enabled }}bundled Valkey{{ else if .Values.vault.addr }}external ({{ .Values.vault.addr }}){{ else }}in-memory (dev only){{ end }}
+
+{{- if .Values.gateway.enabled }}
+
+This chart created Gateway API resources. They require Envoy Gateway to be
+installed in the cluster. If you haven't already:
+
+  helm install eg oci://docker.io/envoyproxy/gateway-helm \
+    -n envoy-gateway-system --create-namespace
+
+Watch the gateway get an address:
+
+  kubectl -n {{ .Release.Namespace }} get gateway {{ include "promptcloak.gatewayName" . }}
+
+{{- if .Values.mockLlm.enabled }}
+
+Send a test request through the gateway (mock upstream echoes what it received):
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "promptcloak.gatewayName" . }} 8080:{{ .Values.gateway.port }} &
+  curl -s localhost:8080/v1/chat/completions \
+    -H 'content-type: application/json' \
+    -d '{"model":"gpt-4","messages":[{"role":"user","content":"I am Jane Doe, email jane@acme.com"}]}'
+
+The upstream's logs show tokens (PII never reached it); your response has them re-hydrated.
+{{- end }}
+{{- end }}
+
+{{- if eq .Values.extproc.tokenSalt "change-me-to-a-random-secret" }}
+
+WARNING: extproc.tokenSalt is the default value. Set a per-environment secret:
+  --set extproc.tokenSalt=$(openssl rand -hex 16)
+{{- end }}

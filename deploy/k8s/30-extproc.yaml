@@ -34,8 +34,9 @@ data:
   # Auth: omit GCP_DLP_TOKEN to use GKE workload identity (metadata server),
   # or provide a static OAuth2 token via the Secret below.
 
-  REDIS_ADDR: "redis.promptcloak-system.svc:6379"
-  REDIS_DB: "0"
+  # Token vault (Redis wire protocol; the bundled backend is Valkey).
+  VALKEY_ADDR: "valkey.promptcloak-system.svc:6379"
+  VALKEY_DB: "0"
   TOKEN_TTL: "24h"
 ---
 apiVersion: v1
@@ -50,8 +51,8 @@ stringData:
   # CHANGE ME: a per-environment secret mixed into token ids. Rotating this
   # invalidates the determinism of previously-issued token ids.
   TOKEN_SALT: "change-me-to-a-random-secret"
-  # Set if Redis AUTH is enabled.
-  REDIS_PASSWORD: ""
+  # Set if Valkey AUTH is enabled.
+  VALKEY_PASSWORD: ""
   # Static OAuth2 access token for the gcpdlp backend. Leave unset to use GKE
   # workload identity (the pod's service account) instead.
   # GCP_DLP_TOKEN: ""
