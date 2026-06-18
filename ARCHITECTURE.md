@@ -58,16 +58,43 @@ Everything else (model id, roles, tool schemas, image URLs) is untouched. If the
 body isn't a JSON object, or nothing matched, the original bytes are returned
 verbatim (no needless re-serialization).
 
-### `internal/detect` — Presidio client
-POSTs `{text, language, score_threshold, entities}` to the Presidio analyzer's
-`/analyze` and maps the `[{entity_type, start, end, score}]` response into
-`Finding`s. Detection (analyzer) is the only Presidio service required;
-tokenization is done in-process.
+### `internal/detect` — pluggable PII detection
+Detection sits behind one interface so the provider is swappable without
+touching anything downstream:
 
-> **Offsets are runes.** Presidio reports code-point offsets (Python string
-> indexing). The redactor slices on `[]rune`, not bytes, so accented names and
-> emoji don't corrupt the surrounding text. (`internal/redact` test
-> `TestTransformUnicodeOffsets`.)
+```go
+type Analyzer interface {
+    Analyze(ctx context.Context, text, language string) ([]Finding, error)
+}
+```
+
+`detect.New(Options)` constructs the backend chosen by `DETECTOR`:
+
+- **`presidio`** (default) — POSTs `{text, language, score_threshold, entities}`
+  to the Presidio analyzer's `/analyze` and maps the
+  `[{entity_type, start, end, score}]` response into `Finding`s. Only the
+  analyzer service is required; tokenization is done in-process.
+- **`regex`** — a dependency-free matcher for structurally-regular entities
+  (EMAIL_ADDRESS, US_SSN, CREDIT_CARD, PHONE_NUMBER, IP_ADDRESS, URL). No
+  external service; ideal for local dev, air-gapped installs, and tests.
+- **`gcpdlp`** — Google Cloud DLP's `content:inspect` REST API. DLP returns
+  code-point ranges directly (no offset conversion needed) and authenticates
+  with a static token or the GCE/GKE metadata server (workload identity).
+
+Two invariants make the backends interchangeable, enforced by each adapter:
+
+> **Offsets are runes.** A `Finding`'s `Start`/`End` are code-point offsets, not
+> bytes. The redactor slices on `[]rune`, so accented names and emoji don't
+> corrupt surrounding text. Presidio and DLP already report code points; the
+> regex backend converts its byte offsets (`runeOffsetIndex`). (`internal/redact`
+> test `TestTransformUnicodeOffsets`, `internal/detect` test
+> `TestRegexAnalyzeFindsAndOffsets`.)
+
+> **Canonical entity vocabulary.** `EntityType` uses Presidio-style names
+> (`PERSON`, `EMAIL_ADDRESS`, …) regardless of backend, so token labels stay
+> stable. The DLP adapter normalizes DLP info-type names (e.g.
+> `US_SOCIAL_SECURITY_NUMBER` → `US_SSN`); the `DETECT_ENTITIES` allowlist is
+> expressed in these canonical names.
 
 ### `internal/redact` — the request-side transform
 Detects, resolves overlapping spans (keep the longest/highest-scoring,
@@ -106,8 +133,9 @@ at every possible split point.
 
 ## Failure modes
 
-- **Request inspection fails** (Presidio down, bad body): governed by
-  `FAIL_OPEN`. Open → forward original (availability); closed → `503` (safety).
+- **Request inspection fails** (detection backend down/unauthorized, bad body):
+  governed by `FAIL_OPEN`. Open → forward original (availability); closed →
+  `503` (safety).
 - **Response re-hydration fails**: always fail-open — never break a user's
   in-flight response. Worst case the user sees a raw token instead of the value.
 - **Vault miss on response**: the token is emitted verbatim (visible but inert).

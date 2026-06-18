@@ -15,19 +15,28 @@ The model never sees the raw sensitive data; the user never sees a redaction.
 promptcloak composes three pieces. **Envoy Gateway** — the
 [Gateway API](https://gateway-api.sigs.k8s.io/) data plane — streams every chat
 transaction over gRPC to the **promptcloak `ext_proc` service** (this project,
-written in Go). That service delegates the actual PII detection to
-**[Microsoft Presidio](https://github.com/microsoft/presidio)**, an open-source
-data de-identification toolkit: user-authored prompt text is sent to Presidio's
-analyzer, which returns the spans (PERSON, EMAIL_ADDRESS, etc.) it recognized.
-promptcloak replaces each span with a reversible token and persists the
-`token → value` mapping in **Redis**, then restores the real values on the
+written in Go). That service delegates PII detection to a **pluggable detection
+backend**, replaces each detected span with a reversible token, persists the
+`token → value` mapping in **Redis**, and restores the real values on the
 response.
 
 promptcloak performs no detection logic of its own — it orchestrates
-tokenization, persistence, and re-hydration around Presidio's analyzer, so
-detection quality and entity coverage are governed entirely by
-[Presidio's configuration and recognizers](https://microsoft.github.io/presidio/analyzer/)
-(see the detection-tuning note under [Quickstart](#quickstart-local-cluster)).
+tokenization, persistence, and re-hydration around whichever detector is
+configured. Detection happens behind a single Go interface
+(`detect.Analyzer`), so backends are interchangeable and adding one means
+implementing that interface; nothing downstream (tokenization, the vault,
+re-hydration) changes. Findings are normalized to a canonical entity vocabulary
+and rune offsets, so token labels and behavior stay consistent across backends.
+
+### Detection backends
+
+Select one with the `DETECTOR` environment variable (default `presidio`):
+
+| `DETECTOR` | Backend | Notes |
+|---|---|---|
+| `presidio` | **[Microsoft Presidio](https://github.com/microsoft/presidio)** analyzer (HTTP) | Default. ML + recognizer based; widest entity coverage (PERSON, LOCATION, …). Detection quality is governed by [Presidio's config and recognizers](https://microsoft.github.io/presidio/analyzer/) — see the detection-tuning note under [Quickstart](#quickstart-local-cluster). |
+| `regex` | Built-in regex matcher | No external service — good for local dev, air-gapped, and tests. Only structurally-regular entities (EMAIL_ADDRESS, US_SSN, CREDIT_CARD, PHONE_NUMBER, IP_ADDRESS, URL); cannot find free-form entities like PERSON. |
+| `gcpdlp` | **[Google Cloud DLP](https://cloud.google.com/dlp)** `content:inspect` (REST) | Managed cloud detection. Auth via a static token (`GCP_DLP_TOKEN`) or, in-cluster, [workload identity](https://cloud.google.com/kubernetes-engine/docs/concepts/workload-identity) (GCE/GKE metadata server). Requires `GCP_DLP_PROJECT`. |
 
 ## How it works
 
@@ -35,9 +44,9 @@ detection quality and entity coverage are governed entirely by
    `HTTPRoute`. Envoy streams each transaction to it.
 2. **Inbound (request).** The request body is delivered buffered. The service
    parses the chat JSON (OpenAI / Anthropic shapes), sends user-authored text to
-   **Presidio** for PII detection, replaces each detected span with a
-   deterministic **token** (`[[CMPL_<ENTITY>_<id>]]`), stores `token → value`
-   in **Redis**, and forwards the sanitized body to the model.
+   the configured **detection backend** for PII detection, replaces each detected
+   span with a deterministic **token** (`[[CMPL_<ENTITY>_<id>]]`), stores
+   `token → value` in **Redis**, and forwards the sanitized body to the model.
 3. **Outbound (response).** Response chunks are delivered streamed. The service
    swaps any of *its* tokens back to the real values (a cheap, streaming-aware
    lookup) so the end user sees their real data restored.
@@ -91,7 +100,7 @@ upstream.
 ```
 cmd/extproc            ext_proc gRPC server entrypoint
 internal/config        environment-driven configuration
-internal/detect        Presidio analyzer client (PII detection)
+internal/detect        pluggable PII detection (presidio / regex / gcpdlp)
 internal/tokenize      reversible token format
 internal/vault         token store (Redis + in-memory)
 internal/redact        detect + tokenize + persist  (the request-side transform)
@@ -113,12 +122,14 @@ helm install eg oci://docker.io/envoyproxy/gateway-helm \
 kubectl wait --for=condition=Available -n envoy-gateway-system deploy/envoy-gateway --timeout=180s
 ```
 
-> **Note on detection tuning.** Detection quality is governed entirely by
-> Presidio config, not this gateway. Out of the box the analyzer image catches
-> PERSON / EMAIL_ADDRESS / LOCATION well, but the phone recognizer is
-> threshold-sensitive (lower `PRESIDIO_SCORE_THRESHOLD` to ~0.3 to catch more)
-> and the default image has **no effective US_SSN recognizer** — add a custom
-> recognizer for SSNs/secrets (see [ROADMAP.md](./ROADMAP.md) items 4–5).
+> **Note on detection tuning (Presidio backend).** With `DETECTOR=presidio`,
+> detection quality is governed entirely by Presidio config, not this gateway.
+> Out of the box the analyzer image catches PERSON / EMAIL_ADDRESS / LOCATION
+> well, but the phone recognizer is threshold-sensitive (lower
+> `DETECT_SCORE_THRESHOLD` to ~0.3 to catch more) and the default image has **no
+> effective US_SSN recognizer** — add a custom recognizer for SSNs/secrets (see
+> [ROADMAP.md](./ROADMAP.md) items 4–5). The built-in `regex` backend, by
+> contrast, *does* match US_SSN out of the box.
 
 Build and load the image, then deploy:
 
@@ -152,20 +163,31 @@ All via environment (see [`30-extproc.yaml`](./deploy/k8s/30-extproc.yaml)):
 | `HEALTH_ADDR` | `:8080` | HTTP `/healthz` + `/readyz` |
 | `LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
 | `FAIL_OPEN` | `true` | forward (vs. reject) when a body can't be inspected |
-| `PRESIDIO_URL` | `http://presidio-analyzer.promptcloak-system.svc:3000` | analyzer endpoint |
-| `PRESIDIO_LANGUAGE` | `en` | detection language |
-| `PRESIDIO_SCORE_THRESHOLD` | `0.5` | minimum confidence to act on |
-| `PRESIDIO_ENTITIES` | *(all)* | comma-separated entity allowlist |
+| `DETECTOR` | `presidio` | detection backend: `presidio`, `regex`, or `gcpdlp` |
+| `DETECT_LANGUAGE` | `en` | detection language (backends that support it) |
+| `DETECT_SCORE_THRESHOLD` | `0.5` | minimum confidence to act on |
+| `DETECT_ENTITIES` | *(all)* | comma-separated canonical entity allowlist (e.g. `PERSON,EMAIL_ADDRESS`) |
+| `DETECT_TIMEOUT` | `5s` | per-call timeout for remote backends |
+| `PRESIDIO_URL` | `http://presidio-analyzer.promptcloak-system.svc:3000` | analyzer endpoint (`presidio` only) |
+| `GCP_DLP_PROJECT` | *(required for `gcpdlp`)* | GCP project id for DLP |
+| `GCP_DLP_LOCATION` | `global` | DLP processing location (`gcpdlp` only) |
+| `GCP_DLP_MIN_LIKELIHOOD` | `POSSIBLE` | DLP likelihood floor (`gcpdlp` only) |
+| `GCP_DLP_TOKEN` | *(unset → metadata server)* | static OAuth2 token; else workload identity (`gcpdlp` only) |
+| `GCP_DLP_ENDPOINT` | `https://dlp.googleapis.com` | DLP API base URL (`gcpdlp` only) |
 | `REDIS_ADDR` | *(unset → in-memory)* | vault backend |
 | `REDIS_PASSWORD` / `REDIS_DB` | `` / `0` | vault auth / db |
 | `TOKEN_TTL` | `24h` | mapping lifetime |
 | `TOKEN_SALT` | `promptcloak` | secret mixed into token ids — **change this** |
 
+The four `DETECT_*` knobs are shared across backends; the legacy
+`PRESIDIO_LANGUAGE` / `PRESIDIO_SCORE_THRESHOLD` / `PRESIDIO_ENTITIES` /
+`PRESIDIO_TIMEOUT` names are still honored as a fallback.
+
 ## Security notes
 
 - **Fail-open vs fail-closed.** The MVP defaults to `FAIL_OPEN=true` so a
-  Presidio outage doesn't break all chat traffic. In regulated environments set
-  `FAIL_OPEN=false` to reject un-inspectable requests with `503`.
+  detection-backend outage doesn't break all chat traffic. In regulated
+  environments set `FAIL_OPEN=false` to reject un-inspectable requests with `503`.
 - **`TOKEN_SALT`** is a secret. With a weak/shared salt, identical PII produces
   identical token ids across requests, enabling correlation. Per-session salting
   is on the roadmap.

@@ -1,5 +1,3 @@
-// Package detect finds PII spans in text. The default implementation calls a
-// Microsoft Presidio analyzer service over HTTP.
 package detect
 
 import (
@@ -12,21 +10,9 @@ import (
 	"time"
 )
 
-// Finding is a single detected entity span. Start and End are code-point
-// (rune) offsets, matching Presidio's Python string indexing.
-type Finding struct {
-	EntityType string
-	Start      int
-	End        int
-	Score      float64
-}
-
-// Analyzer detects PII spans in a piece of text.
-type Analyzer interface {
-	Analyze(ctx context.Context, text, language string) ([]Finding, error)
-}
-
-// Presidio is an Analyzer backed by a Presidio analyzer REST service.
+// Presidio is an Analyzer backed by a Presidio analyzer REST service. Presidio
+// already reports code-point (rune) offsets and uses the canonical entity
+// vocabulary, so no conversion or normalization is needed here.
 //
 // See https://microsoft.github.io/presidio/analyzer/ — POST /analyze with a
 // JSON body of {text, language, score_threshold, entities} returns a JSON array

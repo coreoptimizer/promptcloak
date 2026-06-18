@@ -2,7 +2,8 @@
 //
 // It is meant to be wired into an Envoy-based Gateway-API data plane (Envoy
 // Gateway) via an EnvoyExtensionPolicy. On the request path it tokenizes PII
-// detected by Presidio; on the response path it re-hydrates those tokens.
+// found by the configured detection backend; on the response path it
+// re-hydrates those tokens.
 package main
 
 import (
@@ -50,8 +51,12 @@ func main() {
 	}
 	defer v.Close()
 
-	analyzer := detect.NewPresidio(cfg.Presidio.URL, cfg.Presidio.ScoreThreshold, cfg.Presidio.Entities, cfg.Presidio.Timeout)
-	redactor := redact.New(analyzer, v, cfg.Presidio.Language, cfg.TokenSalt)
+	analyzer, err := detect.New(cfg.Detect)
+	if err != nil {
+		logger.Error("init detector", "error", err)
+		os.Exit(1)
+	}
+	redactor := redact.New(analyzer, v, cfg.Detect.Language, cfg.TokenSalt)
 	srv := extproc.NewServer(redactor, v, cfg.FailOpen, logger)
 
 	grpcServer := grpc.NewServer()
@@ -82,7 +87,7 @@ func main() {
 	logger.Info("promptcloak ext_proc listening",
 		"grpc", cfg.ListenAddr,
 		"health", cfg.HealthAddr,
-		"presidio", cfg.Presidio.URL,
+		"detector", cfg.Detect.Backend,
 		"vault", vaultKind(cfg),
 		"fail_open", cfg.FailOpen,
 	)

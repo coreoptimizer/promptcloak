@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/coreoptimizer/promptcloak/internal/detect"
 )
 
 // Config is the fully-resolved service configuration.
@@ -32,19 +34,9 @@ type Config struct {
 	// hash of the value. Set this to a per-environment secret.
 	TokenSalt string
 
-	Presidio PresidioConfig
-	Redis    RedisConfig
-}
-
-// PresidioConfig configures the Presidio analyzer client.
-type PresidioConfig struct {
-	URL            string
-	Language       string
-	ScoreThreshold float64
-	// Entities restricts detection to these Presidio entity types. Empty means
-	// "all entities the analyzer supports".
-	Entities []string
-	Timeout  time.Duration
+	// Detect is the fully-resolved, backend-agnostic detection configuration.
+	Detect detect.Options
+	Redis  RedisConfig
 }
 
 // RedisConfig configures the Redis-backed token vault. An empty Addr selects
@@ -64,12 +56,22 @@ func Load() (*Config, error) {
 		FailOpen:   getenvBool("FAIL_OPEN", true),
 		TokenTTL:   getenvDuration("TOKEN_TTL", 24*time.Hour),
 		TokenSalt:  getenv("TOKEN_SALT", "promptcloak"),
-		Presidio: PresidioConfig{
-			URL:            getenv("PRESIDIO_URL", "http://presidio-analyzer.promptcloak-system.svc:3000"),
-			Language:       getenv("PRESIDIO_LANGUAGE", "en"),
-			ScoreThreshold: getenvFloat("PRESIDIO_SCORE_THRESHOLD", 0.5),
-			Entities:       getenvList("PRESIDIO_ENTITIES"),
-			Timeout:        getenvDuration("PRESIDIO_TIMEOUT", 5*time.Second),
+		Detect: detect.Options{
+			Backend: getenv("DETECTOR", detect.BackendPresidio),
+			// Shared detection knobs use generic DETECT_* names; the legacy
+			// PRESIDIO_* names are accepted as a fallback for compatibility.
+			Language:       getenvFallback("DETECT_LANGUAGE", "PRESIDIO_LANGUAGE", "en"),
+			Entities:       getenvListFallback("DETECT_ENTITIES", "PRESIDIO_ENTITIES"),
+			ScoreThreshold: getenvFloatFallback("DETECT_SCORE_THRESHOLD", "PRESIDIO_SCORE_THRESHOLD", 0.5),
+			Timeout:        getenvDurationFallback("DETECT_TIMEOUT", "PRESIDIO_TIMEOUT", 5*time.Second),
+			PresidioURL:    getenv("PRESIDIO_URL", "http://presidio-analyzer.promptcloak-system.svc:3000"),
+			GCPDLP: detect.GCPDLPOptions{
+				Project:       getenv("GCP_DLP_PROJECT", ""),
+				Location:      getenv("GCP_DLP_LOCATION", "global"),
+				MinLikelihood: getenv("GCP_DLP_MIN_LIKELIHOOD", "POSSIBLE"),
+				Token:         getenv("GCP_DLP_TOKEN", ""),
+				Endpoint:      getenv("GCP_DLP_ENDPOINT", "https://dlp.googleapis.com"),
+			},
 		},
 		Redis: RedisConfig{
 			Addr:     getenv("REDIS_ADDR", ""),
@@ -77,8 +79,22 @@ func Load() (*Config, error) {
 			DB:       getenvInt("REDIS_DB", 0),
 		},
 	}
-	if c.Presidio.URL == "" {
-		return nil, fmt.Errorf("PRESIDIO_URL must be set")
+
+	// Validate only the selected backend's required settings.
+	switch c.Detect.Backend {
+	case detect.BackendPresidio:
+		if c.Detect.PresidioURL == "" {
+			return nil, fmt.Errorf("PRESIDIO_URL must be set for DETECTOR=%s", detect.BackendPresidio)
+		}
+	case detect.BackendGCPDLP:
+		if c.Detect.GCPDLP.Project == "" {
+			return nil, fmt.Errorf("GCP_DLP_PROJECT must be set for DETECTOR=%s", detect.BackendGCPDLP)
+		}
+	case detect.BackendRegex:
+		// no required configuration
+	default:
+		return nil, fmt.Errorf("unknown DETECTOR %q (want %q, %q or %q)",
+			c.Detect.Backend, detect.BackendPresidio, detect.BackendRegex, detect.BackendGCPDLP)
 	}
 	return c, nil
 }
@@ -114,18 +130,6 @@ func getenvInt(key string, def int) int {
 	return n
 }
 
-func getenvFloat(key string, def float64) float64 {
-	v, ok := os.LookupEnv(key)
-	if !ok || v == "" {
-		return def
-	}
-	f, err := strconv.ParseFloat(v, 64)
-	if err != nil {
-		return def
-	}
-	return f
-}
-
 func getenvDuration(key string, def time.Duration) time.Duration {
 	v, ok := os.LookupEnv(key)
 	if !ok || v == "" {
@@ -138,10 +142,52 @@ func getenvDuration(key string, def time.Duration) time.Duration {
 	return d
 }
 
-// getenvList parses a comma-separated list, trimming whitespace and dropping
-// empties. Returns nil when unset.
-func getenvList(key string) []string {
-	v, ok := os.LookupEnv(key)
+// firstEnv returns the value of the first set, non-empty key among keys. It
+// lets generic DETECT_* settings fall back to the legacy PRESIDIO_* names.
+func firstEnv(keys ...string) (string, bool) {
+	for _, k := range keys {
+		if v, ok := os.LookupEnv(k); ok && v != "" {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+func getenvFallback(primary, fallback, def string) string {
+	if v, ok := firstEnv(primary, fallback); ok {
+		return v
+	}
+	return def
+}
+
+func getenvFloatFallback(primary, fallback string, def float64) float64 {
+	v, ok := firstEnv(primary, fallback)
+	if !ok {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
+}
+
+func getenvDurationFallback(primary, fallback string, def time.Duration) time.Duration {
+	v, ok := firstEnv(primary, fallback)
+	if !ok {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
+}
+
+// getenvListFallback parses a comma-separated list (trimming whitespace and
+// dropping empties) from the first set key. Returns nil when none is set.
+func getenvListFallback(primary, fallback string) []string {
+	v, ok := firstEnv(primary, fallback)
 	if !ok || strings.TrimSpace(v) == "" {
 		return nil
 	}
