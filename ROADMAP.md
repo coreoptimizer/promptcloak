@@ -12,9 +12,9 @@ or hallucinated, or PII that entered via a path we didn't tokenize).
 
 - Run the same Presidio detection on streamed response chunks.
 - Challenge: detection over a *stream* requires sentence/word-boundary buffering
-  so a PII span isn't missed when split across chunks — more involved than the
+  so a PII span isn't missed when split across chunks, more involved than the
   re-hydration carry buffer (which keys off a known sentinel).
-- Decide per-entity action on outbound (mask, block, annotate) — likely reuse the
+- Decide per-entity action on outbound (mask, block, annotate); likely reuse the
   policy engine from item 4.
 
 ## 2. MCP tool-call inspection (deferred from MVP)
@@ -24,7 +24,7 @@ requests and tool results flowing through the gateway.
 
 - Parse JSON-RPC `tools/call` params and tool result payloads.
 - Tokenize sensitive arguments before they reach a tool; re-hydrate results.
-- Distinct content shape from chat completions — extend `internal/llmbody` (or a
+- Distinct content shape from chat completions; extend `internal/llmbody` (or a
   sibling `mcpbody` package) with MCP framing.
 
 ## 3. RAG / context payload inspection (deferred from MVP)
@@ -48,13 +48,13 @@ per-entity-type policy, ideally a CRD:
 
 Presidio is PII-focused. Add credential/secret detection (API keys, tokens,
 private keys) via regex rulesets (à la gitleaks/detect-secrets) as Presidio
-ad-hoc recognizers or an in-process pre-pass — typically a `block` action.
+ad-hoc recognizers or an in-process pre-pass, typically a `block` action.
 
 ## 6. Detokenization & audit API
 
 - Authenticated endpoint to resolve a token → value for authorized auditing.
-- Structured audit log of every detection (entity type, action, route, token id
-  — never the raw value) for compliance evidence.
+- Structured audit log of every detection (entity type, action, route, token id,
+  never the raw value) for compliance evidence.
 
 ## 7. Per-session token salting
 
